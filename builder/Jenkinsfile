@@ -1,0 +1,61 @@
+@Library("jenkins@feature/tf-make")
+
+def branchObj = new com.adp.pipeline.Branch().get()
+
+    pipeline {
+        agent { label 'docker' }
+        options {
+            disableConcurrentBuilds()
+                timeout(time: 1, unit: 'HOURS')
+                buildDiscarder(logRotator(numToKeepStr: '50'))
+        }
+
+        parameters {
+            string (name: 'roleArn', defaultValue: 'arn:aws:iam:accountnumber:role/accountName', description: 'arn to use for building')
+            string (name: 'environment', defaultValue: 'dev', description: 'envrionment to build')
+
+        }
+
+        environment{
+            AWS_SHARED_CREDENTIALS_FILE = ".aws/credentials"
+        }
+
+        stages {
+            stage('Terraform init and plan'){
+                when { branch 'develop'}
+                steps {
+                    withAWS([credentialsId: "username", role: "${params.roleArn}", region: "us-east-1"]) {
+                        withTerraform([image: "dtr_and_image_to_use"]) {
+                            sshagent(['ssh_user_to_use']) {
+                                withEnv(["AWS_SHARED_CREDENTIALS_FILE=.aws/credentials", "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no"]) {
+                                    echo "Initializing Terraform"
+                                    sh """
+                                      make init
+                                      make plan ENV=${params.environment}
+                                      make apply ENV=${params.environment}
+                                      make destroy ENV=${params.environment}
+                                      """
+                                } //withENV
+                            } //sshAgent
+                        } //withTerraform
+                    } //withAWS
+                } //steps
+            } //stage
+        } //stages
+
+    post {
+        always {
+            script {
+                def time = sh (returnStdout: true, script: "date +\"%D %r\"").toString().trim()
+                  def releaseCard = readJSON(file: "build-card.json")
+                  releaseCard.body[0].columns[1].items[0].text ="Terraform: aurora"
+                  releaseCard.body[2].actions[0].url = env.BUILD_URL
+                  webexTeamsMessage credentialsId: "mrbot",
+                                    roomID: "room_id_here",
+                                    markdown: "Build of ${env.BRANCH_NAME} is ${currentBuild.result}. [Build Log](${env.BUILD_URL})",
+                                    attachments: [[contentType: "application/vnd.microsoft.card.adaptive", content: releaseCard]]
+
+            } //script
+        } //always
+    } //post
+    } //pipeline
